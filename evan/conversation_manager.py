@@ -147,7 +147,8 @@ class ConversationManager:
             )
 
             # Update conversation history
-            conversation.history = new_history
+            with conversation.lock:
+                conversation.history = new_history
 
             print(f"Agent response: {response[:100]}..." if len(response) > 100 else f"Agent response: {response}")
 
