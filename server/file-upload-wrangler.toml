@@ -4,12 +4,14 @@ compatibility_date = "2024-01-01"
 
 # Supabase configuration.
 # - SUPABASE_URL is non-secret and can live in [vars].
-# - SUPABASE_ANON_KEY and SUPABASE_SERVICE_KEY should be set via
-#     wrangler secret put SUPABASE_ANON_KEY
+# - SUPABASE_SERVICE_KEY is REQUIRED for production. The worker uses it
+#   server-side so storage RLS does not need to permit anonymous writes.
+#   Set it with:
 #     wrangler secret put SUPABASE_SERVICE_KEY
-#   so they are not committed to source control.
-# Also set PUBLIC_BASE_URL to the public hostname of this worker so that
-# returned downloadUrls point at your deployment.
+# - SUPABASE_ANON_KEY is accepted as a fallback (with a console.warn) for
+#   backwards compatibility only — set it via `wrangler secret put` if used.
+# - PUBLIC_BASE_URL is the public hostname of this worker so the returned
+#   downloadUrls point at your deployment.
 [vars]
 SUPABASE_URL = "https://YOUR_PROJECT.supabase.co"
 PUBLIC_BASE_URL = "https://YOUR_FILE_UPLOAD_API.workers.dev"
