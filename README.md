@@ -116,7 +116,7 @@ The slide layout, color palette, and content structure are decided by the model 
 4. Dispatches each tool call to its provider, collects the result, and feeds it back as a `tool_result` block
 5. Loops until the model emits a terminal `end_turn`
 
-The loop retries indefinitely with exponential backoff on transport and rate-limit errors. After `FALLBACK_RETRY_COUNT` consecutive failures on the primary model, it switches to a backup model and resets the backoff window:
+The loop retries with exponential backoff on transport and rate-limit errors, bounded by a hard ceiling (`CLAUDE_MAX_RETRIES`, default 30 attempts; `CLAUDE_MAX_RETRY_SECONDS`, default 900s wall-clock) so a persistent outage can't wedge a conversation thread forever. After `FALLBACK_RETRY_COUNT` consecutive failures on the primary model, it switches to a backup model and resets the backoff window:
 
 ```python
 # evan/claude_agent.py
@@ -284,13 +284,19 @@ const stub = env.DATA_BROADCASTER.get(id)
 return stub.fetch(request)
 ```
 
-The Durable Object accepts WebSocket upgrades, accepts `POST /broadcast` for fan-out from either side, and caches the latest payload for `GET /latest` so a client that reconnects after a network drop can hydrate without a missed-message protocol. Sessions are stored on the instance and pruned on `close` or `error`.
+The Durable Object accepts WebSocket upgrades at `/` (path-scoped — `POST /broadcast` carrying an `Upgrade` header is no longer mis-routed as a WS request), accepts authenticated `POST /broadcast` for fan-out from either side, and caches the latest payload in DO storage for `GET /latest` so a client that reconnects after a network drop can hydrate without a missed-message protocol.
 
-Messages carry `device`, `format`, `recipient`, `type`, and a `payload`. Each side filters by `recipient` (`user_device` or `evanai-client`) and ignores its own echoes. Full wire format in [`server/PROTOCOL-SPEC.md`](server/PROTOCOL-SPEC.md).
+WebSockets use Cloudflare's hibernation API (`state.acceptWebSocket`) so sockets survive DO eviction without dropped state. Sockets declare their role on connect via `?role=agent` or `?role=user_device`; the Worker filters every broadcast by the message's `recipient` and only delivers to matching roles, so the agent never receives its own echoes.
+
+`POST /broadcast` requires `Authorization: Bearer ${BROADCAST_TOKEN}` when the secret is configured — strongly recommended for any public deploy. Without it, any internet client can drive the agent.
+
+Messages carry `device`, `format`, `recipient`, `type`, and a `payload`. Full wire format in [`server/PROTOCOL-SPEC.md`](server/PROTOCOL-SPEC.md).
 
 ### The file-upload Worker
 
-Files exceeding the WebSocket frame budget take a separate path. `server/file-upload-worker.js` accepts multipart uploads, pipes the bytes into a public Supabase storage bucket, and returns a URL. The agent broadcasts the URL through the Durable Object, and the phone fetches the asset directly. The two-channel design keeps the WebSocket relay cheap and bounded while allowing arbitrarily large artifacts to flow between the agent and the phone.
+Files exceeding the WebSocket frame budget take a separate path. `server/file-upload-worker.js` accepts multipart uploads, pipes the bytes into a public Supabase storage bucket using the server-side `SUPABASE_SERVICE_KEY`, and returns a URL. The agent broadcasts the URL through the Durable Object, and the phone fetches the asset directly. The two-channel design keeps the WebSocket relay cheap and bounded while allowing arbitrarily large artifacts to flow between the agent and the phone.
+
+Uploaded `Content-Type` is whitelisted (unknown types are stored as `application/octet-stream` so the worker domain can't serve attacker-controlled `text/html`), filenames are stripped down to a server-generated `<timestamp>-<random>.<safe-ext>` form to block path injection into the bucket key, and Supabase error bodies are logged internally rather than echoed to clients.
 
 ---
 
@@ -307,6 +313,8 @@ Native Swift and SwiftUI targeting iOS 18.1+. Three integrations:
 ## Debug UI
 
 `evan/debug_server.py` is a Flask app at `evan debug --port 8069`. It exposes the tool catalog, lets you fire tools manually with synthetic parameters, and surfaces the conversation UUID for live tracing. Used during the hackathon to develop tools without needing the phone in the loop.
+
+The server binds to `127.0.0.1` by default and the Werkzeug debugger is forced off (it ships a remote-code-execution vector via the debugger PIN). To bind to a non-loopback interface you must set `EVAN_DEBUG_TOKEN`; clients then send `Authorization: Bearer <token>` on every mutating + file-access route.
 
 <p align="center">
   <img src="docs/images/agent-evan-debug-ui.png" alt="Debug interface showing live tool invocations and conversation state" width="700"/>
