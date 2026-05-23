@@ -5,12 +5,24 @@ These tools interface with Apple Shortcuts via text files and shell scripts.
 """
 
 import os
+import re
 import subprocess
 import json
 from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 
 from ..tool_system import BaseToolSetProvider, Tool, Parameter, ParameterType
+
+
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+_ISO_DATE_RE = re.compile(r"^[0-9T:\-+.Z]{1,32}$")
+_CALENDAR_RE = re.compile(r"^[A-Za-z0-9 _\-]{0,64}$")
+
+
+def _no_control_chars(s: str, max_len: int) -> bool:
+    if len(s) > max_len:
+        return False
+    return not any(ord(c) < 0x20 and c not in ("\n", "\t") for c in s)
 
 
 class ShortcutsToolProvider(BaseToolSetProvider):
@@ -185,9 +197,14 @@ class ShortcutsToolProvider(BaseToolSetProvider):
         tool_dir = self.shortcuts_base / "get_calendar_events"
 
         # Write parameters to text files
-        calendar = parameters.get("calendar", "")
-        from_date = parameters.get("from", "")
-        to_date = parameters.get("to", "")
+        calendar = parameters.get("calendar", "") or ""
+        from_date = parameters.get("from", "") or ""
+        to_date = parameters.get("to", "") or ""
+
+        if not _CALENDAR_RE.match(calendar):
+            return {"error": "Invalid calendar name"}
+        if not _ISO_DATE_RE.match(from_date) or not _ISO_DATE_RE.match(to_date):
+            return {"error": "Invalid date format (expected ISO 8601, no special characters)"}
 
         # Write parameters (clear file if parameter is empty)
         (tool_dir / "calendar.txt").write_text(calendar)
@@ -274,9 +291,21 @@ class ShortcutsToolProvider(BaseToolSetProvider):
                 "error": "All parameters (message_text, recipient_text, subject_text) are required"
             }
 
+        # Recipient must look like an email address
+        if not _EMAIL_RE.match(recipient_text.strip()):
+            return {"error": "Invalid recipient email address"}
+
+        # Subject is a single line with no control chars
+        if "\n" in subject_text or "\r" in subject_text or not _no_control_chars(subject_text, 256):
+            return {"error": "Invalid subject (no newlines or control characters, max 256 chars)"}
+
+        # Message body: allow newlines/tabs but no other control chars, cap size
+        if not _no_control_chars(message_text, 64_000):
+            return {"error": "Invalid message body (control characters not allowed, max 64KB)"}
+
         # Write parameters
         (tool_dir / "message_text.txt").write_text(message_text)
-        (tool_dir / "recipient_text.txt").write_text(recipient_text)
+        (tool_dir / "recipient_text.txt").write_text(recipient_text.strip())
         (tool_dir / "subject_text.txt").write_text(subject_text)
 
         # Execute the shortcut
