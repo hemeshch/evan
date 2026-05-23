@@ -206,8 +206,13 @@ class LazyAgent:
                 # Build command with state restoration
                 stateful_command = self.shell_state.build_command(command)
 
-                # Execute command through bash
-                bash_command = ["bash", "-c", stateful_command]
+                # Wrap with a hard timeout inside the container if requested.
+                # `timeout` (coreutils) exits 124 when the command times out.
+                if timeout and timeout > 0:
+                    bash_command = ["timeout", "--signal=KILL", str(int(timeout)), "bash", "-c", stateful_command]
+                else:
+                    bash_command = ["bash", "-c", stateful_command]
+
                 result = self.container.exec_run(
                     bash_command,
                     stdout=True,
@@ -218,6 +223,7 @@ class LazyAgent:
                     user="agent",
                     detach=False,
                     stream=False,
+                    demux=True,
                     environment={
                         "AGENT_ID": self.agent_id,
                         "HOME": "/home/agent",
@@ -225,14 +231,19 @@ class LazyAgent:
                     }
                 )
 
-                # Decode output
-                output = result.output.decode('utf-8', errors='replace')
+                # With demux=True, output is a (stdout_bytes, stderr_bytes) tuple.
+                stdout_bytes, stderr_bytes = result.output or (None, None)
+                stdout_text = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ""
+                stderr_text = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ""
 
-                # Update shell state from output and clean it
-                cleaned_output = self.shell_state.update_state_from_output(output)
+                # Update shell state from stdout and clean it
+                cleaned_stdout = self.shell_state.update_state_from_output(stdout_text)
 
-                # Return results with cleaned output
-                return result.exit_code, cleaned_output, ""
+                # Surface a clear stderr message for timeouts.
+                if timeout and result.exit_code == 124 and not stderr_text:
+                    stderr_text = f"Command timed out after {int(timeout)}s"
+
+                return result.exit_code, cleaned_stdout, stderr_text
 
             except Exception as e:
                 return 1, "", str(e)
