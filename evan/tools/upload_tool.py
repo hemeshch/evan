@@ -1,11 +1,15 @@
 """Upload tools for submitting files to the user."""
 
 import requests
+import certifi
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from ..tool_system import BaseToolSetProvider, Tool, Parameter, ParameterType
-from ..constants import FILE_UPLOAD_API_URL, BROADCAST_API_URL
+from ..constants import FILE_UPLOAD_API_URL, BROADCAST_API_URL, BROADCAST_TOKEN
+
+
+_CA_BUNDLE = certifi.where()
 
 
 class UploadToolProvider(BaseToolSetProvider):
@@ -105,18 +109,24 @@ class UploadToolProvider(BaseToolSetProvider):
 
         # The file must be in conversation_data folder
         try:
-            # Build the full path
-            file_path_obj = Path(file_path)
-
             # Check if the path starts with conversation_data
             if not file_path.startswith("conversation_data/"):
                 return None, "Error: File must be in conversation_data folder. Path should start with 'conversation_data/'"
 
-            # Get the relative path within conversation_data
+            # Reject any traversal attempts in the path components
             relative_path = Path(file_path).relative_to("conversation_data")
+            if any(part in ("..", "") for part in relative_path.parts):
+                return None, "Error: Invalid path (contains '..' or empty segments)"
 
-            # Resolve the actual file path
+            # Resolve the actual file path and the canonical conversation_data dir
             full_file_path = (conversation_data_link / relative_path).resolve()
+            conv_data_resolved = conversation_data_link.resolve()
+
+            # Strict containment check: resolved path must be inside conversation_data
+            try:
+                full_file_path.relative_to(conv_data_resolved)
+            except ValueError:
+                return None, "Error: File must be inside conversation_data folder"
 
             # Verify the file exists
             if not full_file_path.exists():
@@ -124,11 +134,6 @@ class UploadToolProvider(BaseToolSetProvider):
 
             if not full_file_path.is_file():
                 return None, f"Error: Path is not a file: {file_path}"
-
-            # Verify the file is actually within conversation_data (security check)
-            conv_data_resolved = conversation_data_link.resolve()
-            if not str(full_file_path).startswith(str(conv_data_resolved)):
-                return None, "Error: File must be inside conversation_data folder"
 
             # Read the file for upload
             file_size = full_file_path.stat().st_size
@@ -138,15 +143,10 @@ class UploadToolProvider(BaseToolSetProvider):
                 with open(full_file_path, 'rb') as f:
                     files = {'file': (full_file_path.name, f, 'application/octet-stream')}
 
-                    # Disable SSL verification as in websocket_handler.py
-                    import warnings
-                    from urllib3.exceptions import InsecureRequestWarning
-                    warnings.filterwarnings('ignore', category=InsecureRequestWarning)
-
                     response = requests.post(
                         self.upload_url,
                         files=files,
-                        verify=False  # Disable SSL verification for testing
+                        verify=_CA_BUNDLE
                     )
                     response.raise_for_status()
 
@@ -200,15 +200,16 @@ class UploadToolProvider(BaseToolSetProvider):
                             "timestamp": int(datetime.now().timestamp() * 1000)
                         }
 
-                        # Disable SSL verification as in other places
-                        import warnings
-                        from urllib3.exceptions import InsecureRequestWarning
-                        warnings.filterwarnings('ignore', category=InsecureRequestWarning)
-
+                        broadcast_headers = (
+                            {"Authorization": f"Bearer {BROADCAST_TOKEN}"}
+                            if BROADCAST_TOKEN
+                            else {}
+                        )
                         broadcast_response = requests.post(
                             broadcast_url,
                             json=broadcast_data,
-                            verify=False
+                            headers=broadcast_headers,
+                            verify=_CA_BUNDLE
                         )
                         broadcast_response.raise_for_status()
                         print(f"Broadcast file upload notification to user device")
