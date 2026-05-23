@@ -809,23 +809,23 @@
 
                 toolCall.innerHTML = `
                     <div class="tool-call-header">
-                        <span class="tool-name">${call.tool_id}</span>
-                        <span class="tool-status ${call.status}">${call.status} ${call.execution_time || ''}</span>
+                        <span class="tool-name">${escapeHtml(call.tool_id)}</span>
+                        <span class="tool-status ${escapeHtml(call.status)}">${escapeHtml(call.status)} ${escapeHtml(call.execution_time || '')}</span>
                     </div>
                     <div class="tool-params">
                         <strong>Parameters:</strong><br>
-                        ${JSON.stringify(call.parameters, null, 2)}
+                        ${escapeHtml(JSON.stringify(call.parameters, null, 2))}
                     </div>
                     ${call.result ? `
                         <div class="tool-result">
                             <strong>Result:</strong><br>
-                            ${JSON.stringify(call.result, null, 2)}
+                            ${escapeHtml(JSON.stringify(call.result, null, 2))}
                         </div>
                     ` : ''}
                     ${call.error ? `
                         <div class="tool-result" style="color: #ff4444;">
                             <strong>Error:</strong><br>
-                            ${call.error}
+                            ${escapeHtml(call.error)}
                         </div>
                     ` : ''}
                 `;

@@ -1,10 +1,20 @@
 """Debug server for local testing of the Evan agent."""
 
+import os
+import re
 import time
 import uuid
-from flask import Flask, render_template, request, jsonify, Response
+from functools import wraps
+from flask import Flask, render_template, request, jsonify, Response, abort
 from threading import Lock
 import json
+
+
+_CONVERSATION_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,128}$")
+
+
+def _valid_conversation_id(conversation_id: str) -> bool:
+    return bool(conversation_id) and bool(_CONVERSATION_ID_RE.match(conversation_id))
 
 # Try to import CORS, but make it optional
 try:
@@ -64,15 +74,30 @@ class MockWebSocketHandler:
 class DebugServer:
     """Flask server for debugging the agent locally."""
 
-    def __init__(self, runtime_dir: str = None, port: int = 8069):
+    def __init__(self, runtime_dir: str = None, port: int = 8069, host: str = "127.0.0.1", auth_token: Optional[str] = None):
         self.app = Flask(__name__, template_folder='templates', static_folder='static')
 
-        # Enable CORS if available (for development)
+        # Restrict CORS to localhost only — the debug UI is served from the same origin
         if CORS_AVAILABLE:
-            CORS(self.app)
+            CORS(self.app, origins=[
+                "http://localhost",
+                "http://127.0.0.1",
+                f"http://localhost:{port}",
+                f"http://127.0.0.1:{port}",
+            ])
 
+        self.host = host
         self.port = port
         self.runtime_dir = runtime_dir or DEFAULT_RUNTIME_DIR
+        # Optional shared-secret auth. If unset (and host is loopback), endpoints
+        # are unauthenticated for local-only convenience. Required when binding
+        # to a non-loopback interface.
+        self.auth_token = auth_token or os.environ.get("EVAN_DEBUG_TOKEN")
+        if host not in ("127.0.0.1", "localhost", "::1") and not self.auth_token:
+            raise ValueError(
+                "DebugServer refusing to bind to a non-loopback interface without "
+                "an auth token. Set EVAN_DEBUG_TOKEN or pass auth_token."
+            )
 
         # Track tool calls for debugging with enhanced features
         self.tool_calls = []
@@ -153,6 +178,17 @@ class DebugServer:
             except Exception as e:
                 print(f"{Fore.RED}  ✗ Failed to load {tool_class.__name__}: {e}{Style.RESET_ALL}")
 
+    def _require_auth(self, fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if self.auth_token:
+                header = request.headers.get("Authorization", "")
+                expected = f"Bearer {self.auth_token}"
+                if header != expected:
+                    abort(401)
+            return fn(*args, **kwargs)
+        return wrapper
+
     def _setup_routes(self):
         """Set up Flask routes."""
 
@@ -176,6 +212,7 @@ class DebugServer:
             })
 
         @self.app.route('/api/prompt', methods=['POST'])
+        @self._require_auth
         def process_prompt():
             """Process a prompt through the agent."""
             data = request.json
@@ -184,6 +221,8 @@ class DebugServer:
 
             if not prompt:
                 return jsonify({'error': 'No prompt provided'}), 400
+            if not _valid_conversation_id(conversation_id):
+                return jsonify({'error': 'Invalid conversation_id'}), 400
 
             # Clear tool calls for this request
             with self.tool_calls_lock:
@@ -299,6 +338,7 @@ class DebugServer:
             })
 
         @self.app.route('/api/reset', methods=['POST'])
+        @self._require_auth
         def reset_conversation():
             """Reset a conversation or all conversations."""
             data = request.json
@@ -328,6 +368,7 @@ class DebugServer:
             })
 
         @self.app.route('/api/tool/execute', methods=['POST'])
+        @self._require_auth
         def execute_tool():
             """Manually execute a tool with given parameters."""
             data = request.json
@@ -337,6 +378,8 @@ class DebugServer:
 
             if not tool_id:
                 return jsonify({'error': 'No tool_id provided'}), 400
+            if not _valid_conversation_id(conversation_id):
+                return jsonify({'error': 'Invalid conversation_id'}), 400
 
             # Get or create conversation
             conversation = self.conversation_manager.get_or_create_conversation(conversation_id)
@@ -409,6 +452,7 @@ class DebugServer:
             return jsonify(templates)
 
         @self.app.route('/api/tool/stream/<tool_id>', methods=['POST'])
+        @self._require_auth
         def stream_tool_execution(tool_id):
             """Stream tool execution output in real-time."""
             def generate():
@@ -436,9 +480,13 @@ class DebugServer:
             return Response(generate(), mimetype='text/event-stream')
 
         @self.app.route('/api/files/container/<conversation_id>')
+        @self._require_auth
         def list_container_files(conversation_id):
             """List files created in the container for a conversation."""
             try:
+                if not _valid_conversation_id(conversation_id):
+                    return jsonify({'error': 'Invalid conversation_id'}), 400
+
                 # Find container working directory
                 container_work_dir = self.runtime_manager.runtime_dir / "agent-working-directory" / conversation_id
 
@@ -471,18 +519,31 @@ class DebugServer:
                 return jsonify({'error': str(e)}), 500
 
         @self.app.route('/api/files/download/<conversation_id>/<path:file_path>')
+        @self._require_auth
         def download_container_file(conversation_id, file_path):
             """Download a file from the container working directory."""
             try:
-                from flask import send_file, abort
-                import os
+                from flask import send_file
+
+                if not _valid_conversation_id(conversation_id):
+                    abort(400)
+
+                # Reject any traversal segments in the path
+                rel_parts = [p for p in file_path.split('/') if p]
+                if any(p in ("..", "") for p in rel_parts) or any('\x00' in p for p in rel_parts):
+                    abort(400)
 
                 # Find container working directory
-                container_work_dir = self.runtime_manager.runtime_dir / "agent-working-directory" / conversation_id
-                full_file_path = container_work_dir / file_path
+                container_work_dir = (
+                    self.runtime_manager.runtime_dir / "agent-working-directory" / conversation_id
+                )
+                container_root = container_work_dir.resolve()
+                full_file_path = (container_work_dir / file_path).resolve()
 
-                # Security check - ensure file is within container directory
-                if not str(full_file_path.resolve()).startswith(str(container_work_dir.resolve())):
+                # Strict containment check (no prefix-string bug)
+                try:
+                    full_file_path.relative_to(container_root)
+                except ValueError:
                     abort(403)
 
                 if not full_file_path.exists() or not full_file_path.is_file():
@@ -512,13 +573,15 @@ class DebugServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
-    def run(self, debug: bool = True):
+    def run(self, debug: bool = False):
         """Run the debug server."""
         print(f"\n{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}🚀 Evan Debug Server{Style.RESET_ALL}")
         print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
-        print(f"\n📡 Server running at: {Fore.YELLOW}http://localhost:{self.port}{Style.RESET_ALL}")
-        print(f"📚 API Docs: {Fore.YELLOW}http://localhost:{self.port}/api/tools{Style.RESET_ALL}")
+        print(f"\n📡 Server running at: {Fore.YELLOW}http://{self.host}:{self.port}{Style.RESET_ALL}")
+        print(f"📚 API Docs: {Fore.YELLOW}http://{self.host}:{self.port}/api/tools{Style.RESET_ALL}")
+        if self.auth_token:
+            print(f"{Fore.YELLOW}🔒 Auth: send 'Authorization: Bearer <token>' header{Style.RESET_ALL}")
         print(f"\n{Fore.CYAN}Available Tools:{Style.RESET_ALL}")
 
         tools = self.tool_manager.get_anthropic_tools()
@@ -528,4 +591,5 @@ class DebugServer:
         print(f"\n{Fore.YELLOW}Press Ctrl+C to stop the server{Style.RESET_ALL}")
         print(f"{Fore.GREEN}{'='*60}{Style.RESET_ALL}\n")
 
-        self.app.run(host='0.0.0.0', port=self.port, debug=debug)
+        # Never enable the Werkzeug debugger (RCE via debugger PIN).
+        self.app.run(host=self.host, port=self.port, debug=False, use_debugger=False, use_reloader=False)

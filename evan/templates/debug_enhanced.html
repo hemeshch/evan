@@ -1016,6 +1016,14 @@
     </div>
 
     <script>
+        // Escape user-controlled strings before inserting into innerHTML.
+        function escapeHtml(value) {
+            if (value === null || value === undefined) return '';
+            const div = document.createElement('div');
+            div.textContent = typeof value === 'string' ? value : String(value);
+            return div.innerHTML;
+        }
+
         // State Management
         const state = {
             conversationId: 'debug-' + Date.now(),
@@ -1204,9 +1212,9 @@
             item.id = execution.id;
             item.innerHTML = `
                 <div class="tool-execution-header">
-                    <div class="tool-execution-name">${execution.tool_id}</div>
+                    <div class="tool-execution-name">${escapeHtml(execution.tool_id)}</div>
                     <div class="tool-execution-status">
-                        <span class="status-badge ${execution.status}">${execution.status}</span>
+                        <span class="status-badge ${escapeHtml(execution.status)}">${escapeHtml(execution.status)}</span>
                         ${execution.status === 'running' ? `
                             <div class="loading-dots">
                                 <div class="loading-dot"></div>
@@ -1220,7 +1228,7 @@
                     ${execution.parameters ? `
                         <div class="execution-section">
                             <div class="execution-label">Parameters</div>
-                            <div class="execution-content">${JSON.stringify(execution.parameters, null, 2)}</div>
+                            <div class="execution-content">${escapeHtml(JSON.stringify(execution.parameters, null, 2))}</div>
                         </div>
                     ` : ''}
                 </div>
@@ -1246,7 +1254,7 @@
                 details.innerHTML += `
                     <div class="execution-section">
                         <div class="execution-label">Result</div>
-                        <div class="execution-content">${JSON.stringify(updates.result, null, 2)}</div>
+                        <div class="execution-content">${escapeHtml(JSON.stringify(updates.result, null, 2))}</div>
                     </div>
                 `;
             }
@@ -1254,7 +1262,7 @@
                 details.innerHTML += `
                     <div class="execution-section" style="border-color: #ff4444;">
                         <div class="execution-label" style="color: #ff4444;">Error</div>
-                        <div class="execution-content" style="color: #ff4444;">${updates.error}</div>
+                        <div class="execution-content" style="color: #ff4444;">${escapeHtml(updates.error)}</div>
                     </div>
                 `;
             }
@@ -1262,7 +1270,7 @@
                 details.innerHTML += `
                     <div class="execution-section">
                         <div class="execution-label">Execution Time</div>
-                        <div class="execution-content">${updates.execution_time.toFixed(2)}s</div>
+                        <div class="execution-content">${escapeHtml(updates.execution_time.toFixed(2))}s</div>
                     </div>
                 `;
             }
@@ -1276,9 +1284,9 @@
             message.innerHTML = `
                 <div class="message-header">
                     <span>${type === 'user' ? '👤 User' : type === 'assistant' ? '🤖 Assistant' : '⚡ Tool'}</span>
-                    <span>${new Date().toLocaleTimeString()}</span>
+                    <span>${escapeHtml(new Date().toLocaleTimeString())}</span>
                 </div>
-                <div class="message-content">${content}</div>
+                <div class="message-content" style="white-space: pre-wrap;">${escapeHtml(content)}</div>
             `;
             container.appendChild(message);
             container.scrollTop = container.scrollHeight;
