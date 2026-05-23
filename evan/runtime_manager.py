@@ -60,7 +60,10 @@ class RuntimeManager:
         # NOTE: These symlinks are for host-side tools only (text_editor, file_system_tool, etc.)
         # Docker containers mount the actual directories directly, not via symlinks
         agent_memory_link = working_dir / "agent-memory"
-        if not agent_memory_link.exists():
+        # Replace dangling symlinks so symlink_to() doesn't raise FileExistsError
+        if agent_memory_link.is_symlink() and not agent_memory_link.exists():
+            agent_memory_link.unlink()
+        if not agent_memory_link.is_symlink() and not agent_memory_link.exists():
             # Calculate relative path from working dir to agent-memory
             rel_path = os.path.relpath(
                 self.agent_memory_path,
@@ -72,7 +75,9 @@ class RuntimeManager:
         # NOTE: These symlinks are for host-side tools only (text_editor, file_system_tool, etc.)
         # Docker containers mount the actual directories directly, not via symlinks
         conv_data_link = working_dir / "conversation_data"
-        if not conv_data_link.exists():
+        if conv_data_link.is_symlink() and not conv_data_link.exists():
+            conv_data_link.unlink()
+        if not conv_data_link.is_symlink() and not conv_data_link.exists():
             # Calculate relative path from working dir to conversation data
             rel_path = os.path.relpath(
                 conv_data_path,
