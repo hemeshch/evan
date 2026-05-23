@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin: 10px 0;
+            background-color: #f8f9fa;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 8px;
+            border-radius: 4px;
+            background-color: white;
+            border-left: 3px solid #007bff;
+        }
+        input, textarea, button {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .json-input {
+            height: 100px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Test for Data Transmitter</h1>
+
+    <div class="container">
+        <!-- WebSocket Connection Panel -->
+        <div class="panel">
+            <h3>WebSocket Connection</h3>
+            <div id="connectionStatus" class="status disconnected">Disconnected</div>
+            <button id="connectBtn" onclick="connectWebSocket()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnectWebSocket()" disabled>Disconnect</button>
+
+            <h4>Received Messages:</h4>
+            <div id="messages" class="messages"></div>
+            <button onclick="clearMessages()">Clear Messages</button>
+        </div>
+
+        <!-- Send Data Panel -->
+        <div class="panel">
+            <h3>Send Data (POST)</h3>
+            <textarea id="jsonInput" class="json-input" placeholder='{"message": "Hello World!", "timestamp": "2024-01-01T00:00:00Z"}'></textarea>
+            <button onclick="sendData()">Send Data via POST</button>
+
+            <h4>Quick Send Options:</h4>
+            <button onclick="sendQuickMessage('Hello from WebSocket test!')">Send Hello</button>
+            <button onclick="sendQuickMessage('Test notification', 'notification')">Send Notification</button>
+            <button onclick="sendRandomData()">Send Random Data</button>
+
+            <h4>Latest Data:</h4>
+            <button onclick="getLatestData()">Get Latest Data</button>
+            <div id="latestData" style="margin-top: 10px; padding: 10px; background-color: #f8f9fa; border-radius: 4px;"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        // Edit these to point at your own data-transmitter Worker deployment.
+        const wsUrl = 'wss://YOUR_DATA_TRANSMITTER.workers.dev';
+        const apiUrl = 'https://YOUR_DATA_TRANSMITTER.workers.dev';
+
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                return;
+            }
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                updateConnectionStatus(true);
+                addMessage('Connected to WebSocket', 'system');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    addMessage(`Received: ${JSON.stringify(data, null, 2)}`, 'received');
+                } catch (e) {
+                    addMessage(`Received: ${event.data}`, 'received');
+                }
+            };
+
+            ws.onclose = () => {
+                updateConnectionStatus(false);
+                addMessage('WebSocket connection closed', 'system');
+            };
+
+            ws.onerror = (error) => {
+                addMessage(`WebSocket error: ${error}`, 'error');
+            };
+        }
+
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                updateConnectionStatus(false);
+            }
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusDiv = document.getElementById('connectionStatus');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+
+            if (connected) {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        }
+
+        function addMessage(message, type = 'info') {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+
+            const timestamp = new Date().toLocaleTimeString();
+            messageDiv.innerHTML = `<strong>[${timestamp}]</strong> ${message}`;
+
+            if (type === 'system') {
+                messageDiv.style.borderLeftColor = '#28a745';
+            } else if (type === 'error') {
+                messageDiv.style.borderLeftColor = '#dc3545';
+            } else if (type === 'received') {
+                messageDiv.style.borderLeftColor = '#17a2b8';
+            }
+
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+
+        async function sendData() {
+            const jsonInput = document.getElementById('jsonInput');
+            let data;
+
+            try {
+                data = JSON.parse(jsonInput.value || '{}');
+            } catch (e) {
+                alert('Invalid JSON format!');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${apiUrl}/broadcast`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await response.json();
+                addMessage(`Sent data. Server response: ${JSON.stringify(result)}`, 'sent');
+            } catch (error) {
+                addMessage(`Error sending data: ${error.message}`, 'error');
+            }
+        }
+
+        function sendQuickMessage(message, type = 'message') {
+            const data = {
+                message: message,
+                type: type,
+                timestamp: new Date().toISOString(),
+                from: 'WebSocket Test Page'
+            };
+
+            document.getElementById('jsonInput').value = JSON.stringify(data, null, 2);
+            sendData();
+        }
+
+        function sendRandomData() {
+            const data = {
+                id: Math.random().toString(36).substring(7),
+                value: Math.floor(Math.random() * 100),
+                timestamp: new Date().toISOString(),
+                randomString: Math.random().toString(36).substring(2, 15)
+            };
+
+            document.getElementById('jsonInput').value = JSON.stringify(data, null, 2);
+            sendData();
+        }
+
+        async function getLatestData() {
+            try {
+                const response = await fetch(`${apiUrl}/latest`);
+                const data = await response.json();
+
+                document.getElementById('latestData').innerHTML =
+                    `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+            } catch (error) {
+                document.getElementById('latestData').innerHTML =
+                    `<span style="color: red;">Error: ${error.message}</span>`;
+            }
+        }
+
+        // Auto-connect when page loads
+        window.onload = () => {
+            connectWebSocket();
+
+            // Set default JSON
+            document.getElementById('jsonInput').value = JSON.stringify({
+                message: "Hello from WebSocket test!",
+                timestamp: new Date().toISOString(),
+                user: "TestUser"
+            }, null, 2);
+        };
+    </script>
+</body>
+</html>
