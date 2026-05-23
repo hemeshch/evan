@@ -1,0 +1,261 @@
+# Claude Agent Execution Environment - Simplified
+# Read-only filesystem except for /mnt
+# Designed for isolated agent execution with Bash tool
+# Matches the reference environment where possible
+
+FROM ubuntu:24.04
+
+LABEL maintainer="EvanAI Agent Environment" \
+      version="1.0-simplified" \
+      description="Isolated environment for Claude-based agents with essential tools"
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Environment Variables
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    TZ=UTC \
+    HOME=/home/agent \
+    IS_SANDBOX=yes \
+    PATH="/home/agent/.npm-global/bin:/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    NODE_PATH=/usr/local/lib/node_modules_global \
+    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
+# Create agent user (non-root for security)
+# Using UID 1001 to avoid conflicts with default Ubuntu user
+RUN useradd -m -s /bin/bash -u 1001 agent && \
+    mkdir -p /home/agent && \
+    chown -R agent:agent /home/agent
+
+# Install system packages (essential set)
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+    # Core utilities
+    ca-certificates curl wget gnupg lsb-release software-properties-common \
+    locales sudo apt-transport-https \
+    # Basic tools
+    git vim nano less \
+    zip unzip tar gzip bzip2 xz-utils jq \
+    # Development tools
+    gcc g++ make cmake build-essential \
+    # Python
+    python3 python3-dev python3-venv \
+    python3-pip python3-setuptools python3-wheel \
+    # Network tools
+    net-tools iputils-ping openssh-client netcat-openbsd \
+    # Process monitoring
+    procps htop \
+    # File tools
+    file findutils grep sed gawk coreutils \
+    # Text processing
+    bc libxml2-utils \
+    # Version control
+    subversion mercurial \
+    && locale-gen en_US.UTF-8 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 18.x and npm
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install document processing tools
+RUN apt-get update && apt-get install -y \
+    # Document processing
+    pandoc \
+    imagemagick \
+    poppler-utils \
+    qpdf \
+    tesseract-ocr \
+    ghostscript \
+    # Media processing (skip libreoffice and ffmpeg for now - very large)
+    # Additional dependencies
+    libxml2-dev libxslt1-dev \
+    libpq-dev \
+    libcairo2-dev \
+    libpango1.0-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure npm
+RUN mkdir -p /home/agent/.npm-global && \
+    npm config set prefix '/home/agent/.npm-global' && \
+    echo 'export PATH=/home/agent/.npm-global/bin:$PATH' >> /home/agent/.profile
+
+# Install essential Python packages only
+RUN pip3 install --break-system-packages --no-cache-dir --ignore-installed blinker \
+    # Data Science Core
+    numpy pandas scipy scikit-learn matplotlib seaborn \
+    # Document Processing
+    pypdf PyPDF2 python-pptx openpyxl xlsxwriter python-docx \
+    pytesseract pdf2image \
+    # Image Processing
+    Pillow opencv-python imageio \
+    # Web & APIs
+    requests beautifulsoup4 lxml html5lib selenium httpx aiohttp \
+    # Web Frameworks
+    flask fastapi uvicorn \
+    # Development Tools
+    ipython jupyter notebook black pytest \
+    # Database
+    sqlalchemy psycopg2-binary \
+    # Utilities
+    click rich tqdm pyyaml python-dateutil pytz python-dotenv \
+    # Additional
+    Jinja2 MarkupSafe packaging
+
+# Install essential NPM packages
+RUN npm install -g \
+    typescript \
+    ts-node \
+    @mermaid-js/mermaid-cli
+
+# Create directory structure
+RUN mkdir -p \
+    /mnt \
+    /tmp/agent \
+    /home/agent/.cache \
+    /home/agent/.config \
+    /home/agent/.local/bin \
+    /home/agent/.npm \
+    /home/agent/.npm-global/bin \
+    /mnt/skills \
+    /mnt/user-data/uploads \
+    /mnt/user-data/outputs
+
+# Copy skills directory (must exist in build context)
+# Run: cp -r ../../../reference/environment_reference/skills . before building
+COPY skills/ /mnt/skills/
+
+# Configure ImageMagick for PDF processing
+RUN if [ -f /etc/ImageMagick-6/policy.xml ]; then \
+        sed -i 's/<policy domain="coder" rights="none" pattern="PDF" \/>/<policy domain="coder" rights="read|write" pattern="PDF" \/>/g' \
+        /etc/ImageMagick-6/policy.xml; \
+        sed -i 's/<policy domain="resource" name="memory" value=".*"\/>/<policy domain="resource" name="memory" value="256MiB"\/>/g' \
+        /etc/ImageMagick-6/policy.xml || true; \
+        sed -i 's/<policy domain="resource" name="map" value=".*"\/>/<policy domain="resource" name="map" value="512MiB"\/>/g' \
+        /etc/ImageMagick-6/policy.xml || true; \
+    fi
+
+# Set up sudo for agent user (if needed for specific commands)
+RUN echo "agent ALL=(ALL) NOPASSWD: /bin/mount, /bin/umount" >> /etc/sudoers
+
+# Create entrypoint script
+RUN cat > /entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# Function to setup read-only root
+setup_readonly() {
+    echo "Setting up read-only environment..."
+
+    # Ensure /mnt is writable (will be mounted from host)
+    if [ ! -w /mnt ]; then
+        echo "Warning: /mnt is not writable"
+    fi
+
+    # Set restrictive permissions on system directories
+    chmod 755 /usr /bin /sbin /lib /lib64 2>/dev/null || true
+
+    # Create and ensure tmp directories are writable but isolated
+    mkdir -p /tmp/agent
+    chmod 1777 /tmp/agent
+    export TMPDIR=/tmp/agent
+    export TEMP=/tmp/agent
+    export TMP=/tmp/agent
+}
+
+# Function to display agent info
+show_agent_info() {
+    echo "==================================="
+    echo "Claude Agent Execution Environment"
+    echo "==================================="
+    echo "Agent ID: ${AGENT_ID:-unknown}"
+    echo "Working Directory: /mnt"
+    echo "Temp Directory: /tmp/agent"
+    echo "User: $(whoami)"
+    echo "Python: $(python3 --version)"
+    echo "Node: $(node --version 2>/dev/null || echo 'not installed')"
+    echo "==================================="
+    echo ""
+}
+
+# Main execution
+setup_readonly
+show_agent_info
+
+# If AGENT_ID is set, create agent-specific subdirectory
+if [ -n "$AGENT_ID" ]; then
+    mkdir -p /mnt/.agent_${AGENT_ID}
+    export AGENT_WORKSPACE=/mnt/.agent_${AGENT_ID}
+    echo "Agent workspace: $AGENT_WORKSPACE"
+fi
+
+# Execute command or start bash
+if [ $# -eq 0 ]; then
+    exec /bin/bash
+else
+    exec "$@"
+fi
+EOF
+
+RUN chmod +x /entrypoint.sh
+
+# Create agent environment script
+RUN cat > /home/agent/.bashrc << 'EOF'
+# Agent Environment Configuration
+
+# Aliases for common operations
+alias ll='ls -la'
+alias py='python3'
+alias cls='clear'
+
+# Set prompt to show agent context
+if [ -n "$AGENT_ID" ]; then
+    PS1='[\u@agent-$AGENT_ID \W]\$ '
+else
+    PS1='[\u@agent \W]\$ '
+fi
+
+# Working directory shortcuts
+alias work='cd /mnt'
+alias tmp='cd /tmp/agent'
+
+# Safety aliases
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+
+# Python path
+export PYTHONPATH=/mnt:$PYTHONPATH
+
+# Ensure we're in writable directory
+cd /mnt 2>/dev/null || cd /tmp/agent
+
+# Show agent info on login
+if [ -n "$AGENT_ID" ]; then
+    echo "Agent $AGENT_ID environment ready."
+    echo "Working directory: /mnt (writable)"
+    echo "All other paths are read-only."
+fi
+EOF
+
+# Set ownership
+RUN chown -R agent:agent /home/agent /tmp/agent
+
+# Switch to agent user
+USER agent
+WORKDIR /mnt
+
+# Set entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command
+CMD ["/bin/bash"]
