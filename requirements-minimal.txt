@@ -1,0 +1,25 @@
+# Minimal install for `evan run` + the default-enabled tools.
+#
+# Use this if `pip install -r requirements.txt` fails (the full set pulls
+# the heavy data-science / document-processing stack that the agent uses
+# inside its sandbox container). With this file you'll be able to start
+# the client, chat with Claude, use the filesystem/upload/memory/view-photo
+# tools, and invoke the `zsh` container tool (assuming Docker is set up).
+#
+# Add packages back from requirements.txt as you turn on more tools.
+
+anthropic>=0.39.0
+websocket-client>=1.6.0
+aiohttp>=3.9.0
+click>=8.1.0
+python-dotenv>=1.0.0
+colorama>=0.4.6
+requests>=2.31.0
+certifi>=2023.0.0
+urllib3>=2.0.0
+docker>=7.0.0
+
+# Needed by the optional `evan debug` web interface. Lightweight; safe to
+# include in the minimal set.
+flask>=3.0.0
+flask-cors>=5.0.0

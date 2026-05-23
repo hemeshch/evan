@@ -1,0 +1,15 @@
+__pycache__/
+.env
+venv/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
+.claude/
+evan_runtime/
+evanai_runtime/
+.venv/
+venv312/
+*.egg-info/
+dist/
+build/
