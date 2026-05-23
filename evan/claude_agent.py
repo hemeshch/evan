@@ -48,6 +48,10 @@ class ClaudeAgent:
         self.backoff_multiplier = float(os.environ.get("CLAUDE_BACKOFF_MULTIPLIER", BACKOFF_MULTIPLIER))
         self.fallback_retry_count = int(os.environ.get("CLAUDE_FALLBACK_RETRY_COUNT", FALLBACK_RETRY_COUNT))
         self.backup_model = os.environ.get("CLAUDE_BACKUP_MODEL", BACKUP_CLAUDE_MODEL)
+        # Hard ceiling on the retry loop so a persistent outage cannot wedge
+        # the agent forever. Defaults: 30 attempts or 15 minutes, whichever first.
+        self.max_retries = int(os.environ.get("CLAUDE_MAX_RETRIES", "30"))
+        self.max_retry_seconds = float(os.environ.get("CLAUDE_MAX_RETRY_SECONDS", "900"))
 
     def _load_system_prompt(self) -> str:
         """Get the system prompt with current datetime and user facts."""
@@ -89,8 +93,9 @@ class ClaudeAgent:
         backoff = self.initial_backoff
         current_model = self.model
         switched_to_backup = False
+        deadline = time.monotonic() + self.max_retry_seconds
 
-        while True:  # No limit to retries - will retry indefinitely
+        while True:
             try:
                 # Check if we need to switch to backup model (only once)
                 if retry_count == self.fallback_retry_count and not switched_to_backup:
@@ -220,6 +225,14 @@ class ClaudeAgent:
                 if is_retryable:
                     if retry_count == 1:
                         print(f"{Fore.RED}API call failed: {error_str}{Style.RESET_ALL}")
+
+                    # Stop retrying once we've exceeded the attempt cap or wall-clock deadline.
+                    if retry_count >= self.max_retries or time.monotonic() >= deadline:
+                        print(
+                            f"{Fore.RED}Giving up after {retry_count} retries "
+                            f"({self.max_retry_seconds:.0f}s budget): {error_str}{Style.RESET_ALL}"
+                        )
+                        raise
 
                     # Exponential backoff with max limit
                     backoff = min(backoff * self.backoff_multiplier, self.max_backoff)
