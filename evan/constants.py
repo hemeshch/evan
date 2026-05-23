@@ -21,6 +21,12 @@ FILE_UPLOAD_API_URL = os.environ.get(
     "https://YOUR_FILE_UPLOAD_API.workers.dev/upload",
 )
 
+# Optional shared secret. When set, the Python client adds
+# `Authorization: Bearer <BROADCAST_TOKEN>` to POSTs against /broadcast and
+# the data-transmitter Worker enforces it. Strongly recommended for any
+# public deployment — without it, anyone on the internet can drive the agent.
+BROADCAST_TOKEN = os.environ.get("EVAN_BROADCAST_TOKEN", "")
+
 # Default configurations
 DEFAULT_RUNTIME_DIR = "evan_runtime"
 DEFAULT_CLAUDE_MODEL = "claude-opus-4-1-20250805"

@@ -5,15 +5,35 @@ import time
 import requests
 import ssl
 import certifi
-import warnings
 from typing import Callable, Optional, Dict, Any
 from datetime import datetime
-from .constants import WEBSOCKET_SERVER_URL, BROADCAST_API_URL, LATEST_API_URL
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
+from .constants import WEBSOCKET_SERVER_URL, BROADCAST_API_URL, LATEST_API_URL, BROADCAST_TOKEN
+
+
+_CA_BUNDLE = certifi.where()
+
+
+def _with_role(url: str, role: str) -> str:
+    """Return url with `role=` added to the query string if not already set."""
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.setdefault("role", role)
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _broadcast_headers() -> Dict[str, str]:
+    """Authorization headers for /broadcast (empty when no token configured)."""
+    if BROADCAST_TOKEN:
+        return {"Authorization": f"Bearer {BROADCAST_TOKEN}"}
+    return {}
 
 
 class WebSocketHandler:
     def __init__(self, url: str = None):
-        self.url = url or WEBSOCKET_SERVER_URL
+        # The Cloudflare DataBroadcaster Worker requires a role on connect
+        # so it can route messages by recipient instead of fanning out.
+        self.url = _with_role(url or WEBSOCKET_SERVER_URL, "agent")
         self.ws = None
         self.connected = False
         self.message_handler: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -25,6 +45,8 @@ class WebSocketHandler:
         self.message_handler = handler
 
     def connect(self):
+        if self.thread is not None and self.thread.is_alive():
+            return
         self.should_run = True
         self.thread = threading.Thread(target=self._run)
         self.thread.daemon = True
@@ -33,8 +55,10 @@ class WebSocketHandler:
     def _run(self):
         while self.should_run:
             try:
-                # Disable SSL verification for testing (not recommended for production)
-                ssl_opt = {"cert_reqs": ssl.CERT_NONE}
+                ssl_opt = {
+                    "cert_reqs": ssl.CERT_REQUIRED,
+                    "ca_certs": _CA_BUNDLE,
+                }
 
                 self.ws = websocket.WebSocketApp(
                     self.url,
@@ -103,12 +127,12 @@ class WebSocketHandler:
         }
 
         try:
-            # Disable SSL warnings for testing
-            from urllib3.exceptions import InsecureRequestWarning
-            warnings.filterwarnings('ignore', category=InsecureRequestWarning)
-
-            # Disable SSL verification for testing (not recommended for production)
-            response = requests.post(broadcast_url, json=data, verify=False)
+            response = requests.post(
+                broadcast_url,
+                json=data,
+                headers=_broadcast_headers(),
+                verify=_CA_BUNDLE,
+            )
             response.raise_for_status()
             return True
         except Exception as e:
@@ -144,12 +168,12 @@ class WebSocketHandler:
         }
 
         try:
-            # Disable SSL warnings for testing
-            from urllib3.exceptions import InsecureRequestWarning
-            warnings.filterwarnings('ignore', category=InsecureRequestWarning)
-
-            # Disable SSL verification for testing (not recommended for production)
-            response = requests.post(broadcast_url, json=data, verify=False)
+            response = requests.post(
+                broadcast_url,
+                json=data,
+                headers=_broadcast_headers(),
+                verify=_CA_BUNDLE,
+            )
             response.raise_for_status()
             print(f"📡 Broadcast tool call: {tool_name}")
             return True
@@ -161,12 +185,7 @@ class WebSocketHandler:
         latest_url = LATEST_API_URL
 
         try:
-            # Disable SSL warnings for testing
-            from urllib3.exceptions import InsecureRequestWarning
-            warnings.filterwarnings('ignore', category=InsecureRequestWarning)
-
-            # Disable SSL verification for testing (not recommended for production)
-            response = requests.get(latest_url, verify=False)
+            response = requests.get(latest_url, verify=_CA_BUNDLE)
             response.raise_for_status()
             return response.json()
         except Exception as e:
