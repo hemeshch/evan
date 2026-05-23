@@ -81,22 +81,31 @@ class FileSystemToolProvider(BaseToolSetProvider):
             valid_symlinks = ['conversation_data', 'agent-memory', 'temp']
 
             try:
-                # Get the first part of the path
                 parts = Path(directory).parts
 
-                # If it starts with a valid symlink, allow it
-                if parts and parts[0] in valid_symlinks:
-                    # Resolve to get the actual path
-                    target_path = target_path.resolve(strict=False)
-                else:
-                    # Otherwise check it's within working directory
-                    target_resolved = target_path.resolve()
-                    working_resolved = working_path.resolve()
+                # Reject any explicit traversal segments in user input
+                if any(p == ".." for p in parts):
+                    return None, f"Error: Cannot access directory: {directory}"
 
-                    if not str(target_resolved).startswith(str(working_resolved)):
+                target_resolved = target_path.resolve(strict=False)
+
+                if parts and parts[0] in valid_symlinks:
+                    # Allow access into the symlinked target, but require the
+                    # resolved path to stay inside the resolved symlink target
+                    # (no escape via `..` after symlink traversal).
+                    symlink_root = (working_path / parts[0]).resolve(strict=False)
+                    try:
+                        target_resolved.relative_to(symlink_root)
+                    except ValueError:
+                        return None, f"Error: Cannot access directory: {directory}"
+                else:
+                    working_resolved = working_path.resolve()
+                    try:
+                        target_resolved.relative_to(working_resolved)
+                    except ValueError:
                         return None, f"Error: Cannot access directory: {directory}"
 
-                    target_path = target_resolved
+                target_path = target_resolved
 
             except Exception as e:
                 return None, f"Error: Invalid directory path: {str(e)}"
