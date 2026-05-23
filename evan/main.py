@@ -35,7 +35,7 @@ class AgentClient:
             self.runtime_manager.reset_all()
 
         # Initialize state manager with runtime directory
-        self.state_manager = StateManager(runtime_dir, reset_state=False)  # Don't pass reset_state since we already handled it
+        self.state_manager = StateManager(runtime_dir or DEFAULT_RUNTIME_DIR, reset_state=False)  # Don't pass reset_state since we already handled it
         self.tool_manager = ToolManager()
 
         api_key = os.environ.get("ANTHROPIC_API_KEY")
