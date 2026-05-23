@@ -11,7 +11,7 @@ class StateManager:
     def __init__(self, runtime_dir: str = "evan_runtime", reset_state: bool = False):
         self.runtime_dir = Path(runtime_dir)
         self.state_file = self.runtime_dir / "tool_states.pkl"
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
         # Ensure runtime directory exists
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -42,14 +42,18 @@ class StateManager:
         self._save_state()
 
     def _save_state(self):
-        """Save state to the pickle file."""
+        """Save state to the pickle file atomically."""
         with self.lock:
             data = {
                 'global': self.global_state,
                 'conversations': self.per_conversation_state
             }
-            with open(self.state_file, 'wb') as f:
+            tmp_path = self.state_file.with_suffix(self.state_file.suffix + '.tmp')
+            with open(tmp_path, 'wb') as f:
                 pickle.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.state_file)
 
     def get_global_state(self) -> Dict[str, Any]:
         """Get the global state dictionary."""
